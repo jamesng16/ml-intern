@@ -67,8 +67,9 @@ Run `ml-intern` then `/model` to see the full list of suggested model ids
 (Kimi, Claude Opus, GPT, HF Router models like MiniMax, GLM, DeepSeek, and
 local model prefixes).
 
-In the web app, Kimi K2.6 is the default model. Claude Opus 4.8 and GPT-5.5
-are available only to HF Pro users.
+In the web app, Kimi K2.6 is the default model and is uncapped by ml-intern.
+Claude Opus 4.8 and GPT-5.5 are available only to HF Pro users and are subject
+to the daily Pro model limit.
 
 #### Local models
 

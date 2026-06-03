@@ -49,6 +49,8 @@ from session_manager import (
     session_manager,
 )
 
+import premium_quotas
+
 from agent.core.hf_access import get_jobs_access
 from agent.core.hf_tokens import resolve_hf_request_token
 from agent.core.llm_params import _resolve_llm_params
@@ -172,8 +174,40 @@ async def _enforce_model_plan_access(
     user: dict[str, Any],
     agent_session: AgentSession,
 ) -> None:
-    """Reject session submits when the selected model requires a higher plan."""
-    _reject_model_unavailable_for_plan(agent_session.session.config.model_name, user)
+    """Gate session submits by plan and daily Pro premium quota."""
+    model_name = agent_session.session.config.model_name
+    _reject_model_unavailable_for_plan(model_name, user)
+    if not _is_premium_model(model_name):
+        return
+
+    plan = user.get("plan", "free")
+    cap = premium_quotas.daily_cap_for(plan)
+    if cap is None:
+        return
+    if agent_session.premium_quota_counted:
+        return
+
+    used = await premium_quotas.try_increment_premium(user["user_id"], cap)
+    if used is None:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "premium_model_daily_cap",
+                "plan": plan,
+                "cap": cap,
+                "message": _premium_daily_cap_message(cap),
+            },
+        )
+
+    agent_session.premium_quota_counted = True
+    await session_manager.persist_session_snapshot(agent_session)
+
+
+def _premium_daily_cap_message(cap: int) -> str:
+    return (
+        f"Daily Pro model limit reached ({cap}/day). Use Kimi K2.6 or try "
+        "Claude Opus 4.8 and GPT-5.5 again tomorrow."
+    )
 
 
 def _user_hf_token(user: dict[str, Any] | None) -> str | None:

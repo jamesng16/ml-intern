@@ -91,6 +91,16 @@ class RestoreStore(NoopSessionStore):
         self.metadata.update(fields)
 
 
+class SnapshotStore(NoopSessionStore):
+    enabled = True
+
+    def __init__(self) -> None:
+        self.snapshots: list[dict[str, Any]] = []
+
+    async def save_snapshot(self, **kwargs: Any) -> None:
+        self.snapshots.append(kwargs)
+
+
 class CloseableResource:
     def __init__(self) -> None:
         self.closed = False
@@ -608,6 +618,18 @@ async def test_lazy_restore_preserves_pending_approval_tool_calls():
 
 
 @pytest.mark.asyncio
+async def test_persist_session_snapshot_includes_premium_quota_counted():
+    store = SnapshotStore()
+    manager = _manager_with_store(store)
+    existing = _runtime_agent_session("s1", user_id="owner")
+    existing.premium_quota_counted = True
+
+    await manager.persist_session_snapshot(existing)
+
+    assert store.snapshots[-1]["premium_quota_counted"] is True
+
+
+@pytest.mark.asyncio
 async def test_lazy_restore_preserves_auto_approval_policy():
     store = RestoreStore(
         metadata={
@@ -630,6 +652,31 @@ async def test_lazy_restore_preserves_auto_approval_policy():
         assert restored.session.auto_approval_cost_cap_usd == 5.0
         assert restored.session.auto_approval_estimated_spend_usd == 1.25
         assert restored.session.auto_approval_policy_summary()["remaining_usd"] == 3.75
+    finally:
+        stop.set()
+        await _cancel_runtime_tasks(manager)
+
+
+@pytest.mark.asyncio
+async def test_lazy_restore_preserves_premium_quota_counted():
+    store = RestoreStore(
+        metadata={
+            "session_id": "premium-session",
+            "user_id": "owner",
+            "model": "test-model",
+            "premium_quota_counted": True,
+        }
+    )
+    manager = _manager_with_store(store)
+    stop = _install_fake_runtime(manager)
+
+    try:
+        restored = await manager.ensure_session_loaded(
+            "premium-session", user_id="owner"
+        )
+
+        assert restored is not None
+        assert restored.premium_quota_counted is True
     finally:
         stop.set()
         await _cancel_runtime_tasks(manager)

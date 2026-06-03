@@ -14,7 +14,7 @@ from typing import Any
 
 from bson import BSON
 from pymongo import AsyncMongoClient, DeleteMany, ReturnDocument, UpdateOne
-from pymongo.errors import InvalidDocument, PyMongoError
+from pymongo.errors import DuplicateKeyError, InvalidDocument, PyMongoError
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,12 @@ class NoopSessionStore:
     async def append_trace_message(self, *_: Any, **__: Any) -> int | None:
         return None
 
+    async def get_premium_quota(self, *_: Any, **__: Any) -> int | None:
+        return None
+
+    async def try_increment_premium_quota(self, *_: Any, **__: Any) -> int | None:
+        return None
+
     async def mark_pro_seen(self, *_: Any, **__: Any) -> dict[str, Any] | None:
         return None
 
@@ -147,6 +153,9 @@ class MongoSessionStore(NoopSessionStore):
         )
         await self.db.session_trace_messages.create_index([("created_at", -1)])
         await self.db.pro_users.create_index([("first_seen_pro_at", -1)])
+        await self.db.premium_model_quotas.create_index(
+            [("user_id", 1), ("day", 1)], unique=True
+        )
 
     def _ready(self) -> bool:
         return bool(self.enabled and self.db is not None)
@@ -165,6 +174,7 @@ class MongoSessionStore(NoopSessionStore):
         message_count: int = 0,
         turn_count: int = 0,
         pending_approval: list[dict[str, Any]] | None = None,
+        premium_quota_counted: bool = False,
         notification_destinations: list[str] | None = None,
         auto_approval_enabled: bool = False,
         auto_approval_cost_cap_usd: float | None = None,
@@ -195,6 +205,7 @@ class MongoSessionStore(NoopSessionStore):
                     "message_count": message_count,
                     "turn_count": turn_count,
                     "pending_approval": pending_approval or [],
+                    "premium_quota_counted": premium_quota_counted,
                     "notification_destinations": notification_destinations or [],
                     "auto_approval_enabled": auto_approval_enabled,
                     "auto_approval_cost_cap_usd": auto_approval_cost_cap_usd,
@@ -216,6 +227,7 @@ class MongoSessionStore(NoopSessionStore):
         status: str = "active",
         turn_count: int = 0,
         pending_approval: list[dict[str, Any]] | None = None,
+        premium_quota_counted: bool = False,
         created_at: datetime | None = None,
         notification_destinations: list[str] | None = None,
         auto_approval_enabled: bool = False,
@@ -239,6 +251,7 @@ class MongoSessionStore(NoopSessionStore):
             message_count=len(messages),
             turn_count=turn_count,
             pending_approval=pending_approval,
+            premium_quota_counted=premium_quota_counted,
             notification_destinations=notification_destinations,
             auto_approval_enabled=auto_approval_enabled,
             auto_approval_cost_cap_usd=auto_approval_cost_cap_usd,
@@ -387,6 +400,39 @@ class MongoSessionStore(NoopSessionStore):
         except PyMongoError as e:
             logger.debug("Failed to append trace message for %s: %s", session_id, e)
             return None
+
+    async def get_premium_quota(self, user_id: str, day: str) -> int | None:
+        if not self._ready():
+            return None
+        doc = await self.db.premium_model_quotas.find_one({"_id": f"{user_id}:{day}"})
+        return int(doc.get("count", 0)) if doc else 0
+
+    async def try_increment_premium_quota(
+        self, user_id: str, day: str, cap: int
+    ) -> int | None:
+        if not self._ready() or cap <= 0:
+            return None
+        key = f"{user_id}:{day}"
+        now = _now()
+        try:
+            await self.db.premium_model_quotas.insert_one(
+                {
+                    "_id": key,
+                    "user_id": user_id,
+                    "day": day,
+                    "count": 1,
+                    "updated_at": now,
+                }
+            )
+            return 1
+        except DuplicateKeyError:
+            pass
+        doc = await self.db.premium_model_quotas.find_one_and_update(
+            {"_id": key, "count": {"$lt": cap}},
+            {"$inc": {"count": 1}, "$set": {"updated_at": now}},
+            return_document=ReturnDocument.AFTER,
+        )
+        return int(doc["count"]) if doc else None
 
     async def mark_pro_seen(
         self, user_id: str, *, is_pro: bool

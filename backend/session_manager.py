@@ -112,6 +112,9 @@ class AgentSession:
     is_reaping: bool = False
     broadcaster: Any = None
     title: str | None = None
+    # True once this session has been counted against the user's daily
+    # Pro-only premium model quota.
+    premium_quota_counted: bool = False
 
 
 class SessionCapacityError(Exception):
@@ -587,6 +590,7 @@ class SessionManager:
                 pending_approval=self._serialize_pending_approval(
                     agent_session.session
                 ),
+                premium_quota_counted=agent_session.premium_quota_counted,
                 created_at=agent_session.created_at,
                 notification_destinations=list(
                     agent_session.session.notification_destinations
@@ -760,6 +764,7 @@ class SessionManager:
             is_active=True,
             is_processing=False,
             title=meta.get("title"),
+            premium_quota_counted=bool(meta.get("premium_quota_counted")),
         )
         started = await self._start_agent_session(
             agent_session=agent_session,

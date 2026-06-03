@@ -13,7 +13,7 @@ Notes:
 - Vite proxies `/api` and `/auth` to `http://localhost:7860`.
 - If `127.0.0.1:7860` is already owned by another local process, binding the backend to `::1` lets the Vite proxy resolve `localhost` cleanly.
 - Prefer `npm ci` over `npm install` for setup, since `npm install` may rewrite `frontend/package-lock.json` metadata depending on npm version.
-- Production defaults to Kimi K2.6 through the HF Router (`moonshotai/Kimi-K2.6`). Non-local LLM calls use `https://router.huggingface.co/v1` with Hugging Face tokens and `X-HF-Bill-To` from `HF_BILL_TO` (default `smolagents`) when configured. Claude Opus 4.8 and GPT-5.5 are Pro-only in the web app. For local development, set `HF_TOKEN` and optionally `ML_INTERN_DEFAULT_MODEL_ID`.
+- Production defaults to Kimi K2.6 through the HF Router (`moonshotai/Kimi-K2.6`). Non-local LLM calls use `https://router.huggingface.co/v1` with Hugging Face tokens and `X-HF-Bill-To` from `HF_BILL_TO` (default `smolagents`) when configured. Default Kimi traffic is uncapped by ml-intern; Claude Opus 4.8 and GPT-5.5 are Pro-only in the web app and use the daily Pro premium cap (`PREMIUM_PRO_DAILY`, default 20). For local development, set `HF_TOKEN` and optionally `ML_INTERN_DEFAULT_MODEL_ID`.
 
 ## Development Checks
 

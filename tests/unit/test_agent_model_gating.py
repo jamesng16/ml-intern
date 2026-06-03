@@ -14,8 +14,16 @@ if str(_BACKEND_DIR) not in sys.path:
 from routes import agent  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _reset_quota_store():
+    agent.premium_quotas._reset_for_tests()
+    yield
+    agent.premium_quotas._reset_for_tests()
+
+
 def _session(model: str = agent.DEFAULT_FREE_MODEL_ID):
     return SimpleNamespace(
+        premium_quota_counted=False,
         session=SimpleNamespace(config=SimpleNamespace(model_name=model)),
     )
 
@@ -162,7 +170,16 @@ async def test_switching_to_unknown_model_id_is_rejected(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_default_model_submit_has_no_daily_limit():
+async def test_default_model_submit_has_no_daily_limit(monkeypatch):
+    async def fail_if_incremented(user_id, cap):
+        raise AssertionError("default/free model should not consume premium quota")
+
+    monkeypatch.setattr(
+        agent.premium_quotas,
+        "try_increment_premium",
+        fail_if_incremented,
+    )
+
     await agent._enforce_model_plan_access(
         {"user_id": "u1", "plan": "free"},
         _session(agent.DEFAULT_FREE_MODEL_ID),
@@ -170,23 +187,102 @@ async def test_default_model_submit_has_no_daily_limit():
 
 
 @pytest.mark.asyncio
-async def test_free_user_cannot_submit_with_pro_only_model():
+async def test_free_user_cannot_submit_with_pro_only_model(monkeypatch):
+    async def fail_if_incremented(user_id, cap):
+        raise AssertionError("rejected model should not consume premium quota")
+
+    monkeypatch.setattr(
+        agent.premium_quotas,
+        "try_increment_premium",
+        fail_if_incremented,
+    )
+
+    agent_session = _session(agent.DEFAULT_OPUS_MODEL_ID)
+
     with pytest.raises(HTTPException) as exc_info:
         await agent._enforce_model_plan_access(
             {"user_id": "u1", "plan": "free"},
-            _session(agent.DEFAULT_OPUS_MODEL_ID),
+            agent_session,
         )
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail["error"] == "model_requires_pro"
+    assert agent_session.premium_quota_counted is False
 
 
 @pytest.mark.asyncio
 async def test_pro_user_can_submit_with_pro_only_model():
+    agent_session = _session(agent.DEFAULT_OPUS_MODEL_ID)
+
     await agent._enforce_model_plan_access(
         {"user_id": "u1", "plan": "pro"},
-        _session(agent.DEFAULT_OPUS_MODEL_ID),
+        agent_session,
     )
+
+    assert agent_session.premium_quota_counted is True
+    assert await agent.premium_quotas.get_premium_used_today("u1") == 1
+
+
+@pytest.mark.asyncio
+async def test_pro_user_pro_only_submit_counts_once_per_session(monkeypatch):
+    persisted = []
+
+    async def fake_persist_session_snapshot(agent_session):
+        persisted.append(agent_session)
+
+    monkeypatch.setattr(
+        agent.session_manager,
+        "persist_session_snapshot",
+        fake_persist_session_snapshot,
+    )
+
+    agent_session = _session(agent.DEFAULT_GPT_MODEL_ID)
+
+    await agent._enforce_model_plan_access(
+        {"user_id": "pro-user", "plan": "pro"},
+        agent_session,
+    )
+    await agent._enforce_model_plan_access(
+        {"user_id": "pro-user", "plan": "pro"},
+        agent_session,
+    )
+
+    assert agent_session.premium_quota_counted is True
+    assert await agent.premium_quotas.get_premium_used_today("pro-user") == 1
+    assert persisted == [agent_session]
+
+
+@pytest.mark.asyncio
+async def test_pro_user_hits_daily_premium_model_cap(monkeypatch):
+    async def fake_persist_session_snapshot(_agent_session):
+        return None
+
+    monkeypatch.setattr(
+        agent.session_manager,
+        "persist_session_snapshot",
+        fake_persist_session_snapshot,
+    )
+    monkeypatch.setattr(agent.premium_quotas, "PREMIUM_PRO_DAILY", 1)
+
+    first = _session(agent.DEFAULT_OPUS_MODEL_ID)
+    await agent._enforce_model_plan_access(
+        {"user_id": "pro-user", "plan": "pro"},
+        first,
+    )
+
+    second = _session(agent.DEFAULT_GPT_MODEL_ID)
+    with pytest.raises(HTTPException) as exc_info:
+        await agent._enforce_model_plan_access(
+            {"user_id": "pro-user", "plan": "pro"},
+            second,
+        )
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.detail["error"] == "premium_model_daily_cap"
+    assert exc_info.value.detail["plan"] == "pro"
+    assert exc_info.value.detail["cap"] == 1
+    assert "Kimi K2.6" in exc_info.value.detail["message"]
+    assert second.premium_quota_counted is False
 
 
 @pytest.mark.asyncio
