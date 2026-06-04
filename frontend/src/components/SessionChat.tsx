@@ -15,7 +15,7 @@ import ExpiredBanner from '@/components/Chat/ExpiredBanner';
 import BillingBanner from '@/components/Chat/BillingBanner';
 import ChatErrorBanner from '@/components/Chat/ChatErrorBanner';
 import { useUserQuota } from '@/hooks/useUserQuota';
-import { isPremiumPath } from '@/utils/model';
+import { isPaidPath } from '@/utils/model';
 import { apiFetch } from '@/utils/api';
 import { logger } from '@/utils/logger';
 
@@ -90,17 +90,17 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
   const busy = isProcessing || sdkBusy;
   const { quota, refresh: refreshQuota } = useUserQuota({ enabled: isActive });
 
-  // Whether this session's premium usage is being billed to the user's own HF
-  // account (past the subsidized daily allowance). Re-read after each turn,
-  // since the backend flips it at submit time. Only premium-model sessions can
+  // Whether this session's paid-tier usage is being billed to the user's own HF
+  // account. Re-read after each turn, since the backend flips it at submit time.
+  // Only paid-tier sessions can
   // ever be user-billed, so skip the fetch for free models.
-  const [premiumBilled, setPremiumBilled] = useState<boolean | null>(null);
-  const [premiumQuotaCounted, setPremiumQuotaCounted] = useState<boolean | null>(null);
-  const onPremiumModel = isPremiumPath(sessionMeta?.model ?? undefined);
+  const [paidBilled, setPaidBilled] = useState<boolean | null>(null);
+  const [paidQuotaCounted, setPaidQuotaCounted] = useState<boolean | null>(null);
+  const onPaidModel = isPaidPath(sessionMeta?.model ?? undefined);
   useEffect(() => {
-    if (!isActive || !onPremiumModel) {
-      setPremiumBilled(null);
-      setPremiumQuotaCounted(null);
+    if (!isActive || !onPaidModel) {
+      setPaidBilled(null);
+      setPaidQuotaCounted(null);
       return;
     }
     if (busy) return;
@@ -109,25 +109,25 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!cancelled && d) {
-          setPremiumBilled(Boolean(d.premium_user_billed));
-          setPremiumQuotaCounted(Boolean(d.premium_quota_counted));
+          setPaidBilled(Boolean(d.paid_user_billed));
+          setPaidQuotaCounted(Boolean(d.paid_quota_counted));
         }
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [busy, isActive, onPremiumModel, sessionId]);
+  }, [busy, isActive, onPaidModel, sessionId]);
 
-  const sessionPremiumBilled = premiumBilled ?? Boolean(sessionMeta?.premiumUserBilled);
-  const sessionPremiumQuotaCounted =
-    premiumQuotaCounted ?? Boolean(sessionMeta?.premiumQuotaCounted);
-  const premiumBillingNotice =
-    sessionPremiumBilled ||
+  const sessionPaidBilled = paidBilled ?? Boolean(sessionMeta?.paidUserBilled);
+  const sessionPaidQuotaCounted =
+    paidQuotaCounted ?? Boolean(sessionMeta?.paidQuotaCounted);
+  const paidBillingNotice =
+    sessionPaidBilled ||
     (isActive &&
-      onPremiumModel &&
-      quota?.premiumRemaining === 0 &&
-      !sessionPremiumQuotaCounted);
+      onPaidModel &&
+      quota?.paidRemaining === 0 &&
+      !sessionPaidQuotaCounted);
 
   const handleSendMessage = useCallback(
     async (text: string) => {
@@ -175,7 +175,7 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
         <ExpiredBanner sessionId={sessionId} />
       ) : (
         <>
-          {premiumBillingNotice && <BillingBanner />}
+          {paidBillingNotice && <BillingBanner />}
           {chatError && (
             <ChatErrorBanner
               error={chatError}

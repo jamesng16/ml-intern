@@ -1,21 +1,18 @@
-"""Daily quota for subsidized premium model sessions.
+"""Daily quota for subsidized paid-tier model sessions.
 
-Tracks per-user premium model session starts against a daily cap derived from
+Tracks per-user paid-tier model session starts against a daily cap derived from
 the user's HF plan. MongoDB is the source of truth when configured; the
 in-process dict remains the fallback for local/dev/test runs.
 
-The public names still say ``claude`` because this quota bucket originally
-only covered Claude and the persisted session field uses that name.
-
-Unit: first premium-model submit per session per UTC day, not raw messages. A
-user who sends with an allowed premium model in any session consumes one quota
+Unit: first paid-tier submit per session per UTC day, not raw messages. A
+user who sends with a paid-tier model in any session consumes one quota
 point for that day; continuing the same session on the same day doesn't
-(`AgentSession.claude_counted_day` guards that). Model-level plan gates live in
-``backend.routes.agent``; this module only tracks the per-plan daily cap.
+(`AgentSession.paid_counted_day` guards that). Model-level tier handling lives
+in ``backend.routes.agent``; this module only tracks the per-plan daily cap.
 
 Cap tiers:
-  free user   → CLAUDE_FREE_DAILY (2) for the default premium model
-  pro user    → CLAUDE_PRO_DAILY  (20)
+  free user   → 0 included paid-tier sessions
+  pro user    → PRO_DAILY_SESSIONS
 """
 
 import asyncio
@@ -28,11 +25,10 @@ from agent.core.session_persistence import (
     _reset_store_for_tests,
 )
 
-CLAUDE_FREE_DAILY: int = int(os.environ.get("CLAUDE_FREE_DAILY", "2"))
-CLAUDE_PRO_DAILY: int = int(os.environ.get("CLAUDE_PRO_DAILY", "20"))
+PRO_DAILY_SESSIONS: int = int(os.environ.get("PRO_DAILY_SESSIONS", "20"))
 
 # user_id -> (day_utc_iso, count_for_that_day)
-_claude_counts: dict[str, tuple[str, int]] = {}
+_paid_counts: dict[str, tuple[str, int]] = {}
 _lock = asyncio.Lock()
 
 
@@ -41,36 +37,36 @@ def _today() -> str:
 
 
 def current_quota_day() -> str:
-    """Return the UTC date key used for today's premium-model quota bucket."""
+    """Return the UTC date key used for today's paid-tier quota bucket."""
     return _today()
 
 
 def daily_cap_for(plan: str | None) -> int:
-    """Return the daily Claude-session cap for the given plan."""
-    return CLAUDE_PRO_DAILY if plan == "pro" else CLAUDE_FREE_DAILY
+    """Return the daily included paid-tier session cap for the given plan."""
+    return PRO_DAILY_SESSIONS if plan == "pro" else 0
 
 
-async def get_claude_used_today(user_id: str) -> int:
-    """Return today's Claude session count for the user (0 if none / stale day)."""
+async def get_paid_used_today(user_id: str) -> int:
+    """Return today's paid-tier session count for the user."""
     store = get_session_store()
     if getattr(store, "enabled", False):
         db_count = await store.get_quota(user_id, _today())
         return db_count or 0
 
     async with _lock:
-        entry = _claude_counts.get(user_id)
+        entry = _paid_counts.get(user_id)
         if entry is None:
             return 0
         day, count = entry
         if day != _today():
             # Stale day — drop the entry so the first increment starts fresh.
-            _claude_counts.pop(user_id, None)
+            _paid_counts.pop(user_id, None)
             return 0
         return count
 
 
-async def increment_claude(user_id: str) -> int:
-    """Bump today's Claude session count for the user. Returns the new value."""
+async def increment_paid(user_id: str) -> int:
+    """Bump today's paid-tier session count for the user. Returns the new value."""
     store = get_session_store()
     if getattr(store, "enabled", False):
         db_count = await store.try_increment_quota(user_id, _today(), cap=10**9)
@@ -78,15 +74,15 @@ async def increment_claude(user_id: str) -> int:
 
     async with _lock:
         today = _today()
-        day, count = _claude_counts.get(user_id, (today, 0))
+        day, count = _paid_counts.get(user_id, (today, 0))
         if day != today:
             count = 0
         count += 1
-        _claude_counts[user_id] = (today, count)
+        _paid_counts[user_id] = (today, count)
         return count
 
 
-async def try_increment_claude(user_id: str, cap: int) -> int | None:
+async def try_increment_paid(user_id: str, cap: int) -> int | None:
     """Atomically bump today's count if below *cap*.
 
     Returns the new count, or None when the user is already at the cap.
@@ -97,17 +93,17 @@ async def try_increment_claude(user_id: str, cap: int) -> int | None:
 
     async with _lock:
         today = _today()
-        day, count = _claude_counts.get(user_id, (today, 0))
+        day, count = _paid_counts.get(user_id, (today, 0))
         if day != today:
             count = 0
         if count >= cap:
             return None
         count += 1
-        _claude_counts[user_id] = (today, count)
+        _paid_counts[user_id] = (today, count)
         return count
 
 
-async def refund_claude(user_id: str) -> None:
+async def refund_paid(user_id: str) -> None:
     """Decrement today's count — used when session creation fails after a successful gate."""
     store = get_session_store()
     if getattr(store, "enabled", False):
@@ -115,21 +111,21 @@ async def refund_claude(user_id: str) -> None:
         return
 
     async with _lock:
-        entry = _claude_counts.get(user_id)
+        entry = _paid_counts.get(user_id)
         if entry is None:
             return
         day, count = entry
         if day != _today():
-            _claude_counts.pop(user_id, None)
+            _paid_counts.pop(user_id, None)
             return
         new_count = max(0, count - 1)
         if new_count == 0:
-            _claude_counts.pop(user_id, None)
+            _paid_counts.pop(user_id, None)
         else:
-            _claude_counts[user_id] = (day, new_count)
+            _paid_counts[user_id] = (day, new_count)
 
 
 def _reset_for_tests() -> None:
     """Test-only: clear the in-memory store."""
-    _claude_counts.clear()
+    _paid_counts.clear()
     _reset_store_for_tests(NoopSessionStore())

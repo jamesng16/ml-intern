@@ -1,8 +1,7 @@
 /**
- * Shown above the composer when the active session's premium usage is being
- * billed to the user's own HF account — i.e. they're past the subsidized daily
- * allowance and the session flipped to `premium_user_billed`. Dismissible once
- * per day so we stay transparent about billing without nagging every session.
+ * Shown above the composer when the active session's paid-tier usage is being
+ * billed to the user's own HF account. Dismissible once per day so we stay
+ * transparent about billing without nagging every session.
  */
 import { useState } from 'react';
 import { Box, Link, Typography } from '@mui/material';
@@ -47,7 +46,7 @@ export default function BillingBanner() {
           variant="caption"
           sx={{ flex: 1, color: 'var(--text)', fontSize: '0.78rem', lineHeight: 1.5 }}
         >
-          You've used today's subsidized premium sessions — this session's usage is billed to your{' '}
+          This paid-tier session is billed to your{' '}
           <Link
             href="https://huggingface.co/settings/billing"
             target="_blank"

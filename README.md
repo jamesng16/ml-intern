@@ -54,8 +54,8 @@ ml-intern "fine-tune llama on my dataset"
 **Options:**
 
 ```bash
-ml-intern --model anthropic/claude-sonnet-4-6:fal-ai "your prompt"
 ml-intern --model moonshotai/Kimi-K2.6 "your prompt"
+ml-intern --model anthropic/claude-opus-4.8:fal-ai "your prompt"
 ml-intern --model openai/gpt-5.5:fal-ai "your prompt"
 ml-intern --model ollama/llama3.1:8b "your prompt"
 ml-intern --model vllm/meta-llama/Llama-3.1-8B-Instruct "your prompt"
@@ -68,8 +68,10 @@ Run `ml-intern` then `/model` to see the full list of suggested model ids
 (Claude, GPT, HF Router models like MiniMax, Kimi, GLM, DeepSeek, and local
 model prefixes).
 
-In the web app, subsidized daily sessions for Claude Opus 4.8 and GPT-5.5 are
-available only to HF Pro users; Claude Sonnet 4.6 is the default premium model.
+In the web app, non-Pro users default to Kimi K2.6. HF Pro users default to
+Claude Opus 4.8 and get `PRO_DAILY_SESSIONS` included paid-tier sessions per
+UTC day. Anyone can choose the paid tier, and usage outside the included Pro
+allowance is billed to their Hugging Face account.
 
 #### Local models
 
@@ -386,7 +388,7 @@ Edit `configs/cli_agent_config.json` for CLI defaults, or
 
 ```json
 {
-  "model_name": "anthropic/claude-sonnet-4-6:fal-ai",
+  "model_name": "moonshotai/Kimi-K2.6",
   "mcpServers": {
     "your-server-name": {
       "transport": "http",

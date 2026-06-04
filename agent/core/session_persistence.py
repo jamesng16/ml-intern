@@ -174,9 +174,9 @@ class MongoSessionStore(NoopSessionStore):
         message_count: int = 0,
         turn_count: int = 0,
         pending_approval: list[dict[str, Any]] | None = None,
-        claude_counted: bool = False,
-        claude_counted_day: str | None = None,
-        premium_user_billed: bool = False,
+        paid_counted: bool = False,
+        paid_counted_day: str | None = None,
+        paid_user_billed: bool = False,
         notification_destinations: list[str] | None = None,
         auto_approval_enabled: bool = False,
         auto_approval_cost_cap_usd: float | None = None,
@@ -207,9 +207,9 @@ class MongoSessionStore(NoopSessionStore):
                     "message_count": message_count,
                     "turn_count": turn_count,
                     "pending_approval": pending_approval or [],
-                    "claude_counted": claude_counted,
-                    "claude_counted_day": claude_counted_day,
-                    "premium_user_billed": premium_user_billed,
+                    "paid_counted": paid_counted,
+                    "paid_counted_day": paid_counted_day,
+                    "paid_user_billed": paid_user_billed,
                     "notification_destinations": notification_destinations or [],
                     "auto_approval_enabled": auto_approval_enabled,
                     "auto_approval_cost_cap_usd": auto_approval_cost_cap_usd,
@@ -231,9 +231,9 @@ class MongoSessionStore(NoopSessionStore):
         status: str = "active",
         turn_count: int = 0,
         pending_approval: list[dict[str, Any]] | None = None,
-        claude_counted: bool = False,
-        claude_counted_day: str | None = None,
-        premium_user_billed: bool = False,
+        paid_counted: bool = False,
+        paid_counted_day: str | None = None,
+        paid_user_billed: bool = False,
         created_at: datetime | None = None,
         notification_destinations: list[str] | None = None,
         auto_approval_enabled: bool = False,
@@ -257,9 +257,9 @@ class MongoSessionStore(NoopSessionStore):
             message_count=len(messages),
             turn_count=turn_count,
             pending_approval=pending_approval,
-            claude_counted=claude_counted,
-            claude_counted_day=claude_counted_day,
-            premium_user_billed=premium_user_billed,
+            paid_counted=paid_counted,
+            paid_counted_day=paid_counted_day,
+            paid_user_billed=paid_user_billed,
             notification_destinations=notification_destinations,
             auto_approval_enabled=auto_approval_enabled,
             auto_approval_cost_cap_usd=auto_approval_cost_cap_usd,
@@ -412,16 +412,18 @@ class MongoSessionStore(NoopSessionStore):
     async def get_quota(self, user_id: str, day: str) -> int | None:
         if not self._ready():
             return None
-        doc = await self.db.claude_quotas.find_one({"_id": f"{user_id}:{day}"})
+        doc = await self.db.paid_tier_quotas.find_one({"_id": f"{user_id}:{day}"})
         return int(doc.get("count", 0)) if doc else 0
 
     async def try_increment_quota(self, user_id: str, day: str, cap: int) -> int | None:
         if not self._ready():
             return None
+        if cap <= 0:
+            return None
         key = f"{user_id}:{day}"
         now = _now()
         try:
-            await self.db.claude_quotas.insert_one(
+            await self.db.paid_tier_quotas.insert_one(
                 {
                     "_id": key,
                     "user_id": user_id,
@@ -433,7 +435,7 @@ class MongoSessionStore(NoopSessionStore):
             return 1
         except DuplicateKeyError:
             pass
-        doc = await self.db.claude_quotas.find_one_and_update(
+        doc = await self.db.paid_tier_quotas.find_one_and_update(
             {"_id": key, "count": {"$lt": cap}},
             {"$inc": {"count": 1}, "$set": {"updated_at": now}},
             return_document=ReturnDocument.AFTER,
@@ -443,7 +445,7 @@ class MongoSessionStore(NoopSessionStore):
     async def refund_quota(self, user_id: str, day: str) -> None:
         if not self._ready():
             return
-        await self.db.claude_quotas.update_one(
+        await self.db.paid_tier_quotas.update_one(
             {"_id": f"{user_id}:{day}", "count": {"$gt": 0}},
             {"$inc": {"count": -1}, "$set": {"updated_at": _now()}},
         )

@@ -1,5 +1,5 @@
 /**
- * Reads the current user's premium-model daily quota + plan tier from the backend.
+ * Reads the current user's paid-tier daily quota + plan tier from the backend.
  *
  * Fetches once when the user becomes authenticated, and exposes a `refresh()`
  * that callers invoke after a successful session-create / model-switch so the
@@ -13,9 +13,9 @@ export type PlanTier = 'free' | 'pro';
 
 export interface UserQuota {
   plan: PlanTier;
-  premiumUsedToday: number;
-  premiumDailyCap: number;
-  premiumRemaining: number;
+  paidUsedToday: number;
+  paidDailyCap: number;
+  paidRemaining: number;
 }
 
 export function useUserQuota({ enabled = true }: { enabled?: boolean } = {}) {
@@ -32,9 +32,9 @@ export function useUserQuota({ enabled = true }: { enabled?: boolean } = {}) {
       const data = await res.json();
       setQuota({
         plan: (data.plan ?? 'free') as PlanTier,
-        premiumUsedToday: data.premium_used_today ?? 0,
-        premiumDailyCap: data.premium_daily_cap ?? 1,
-        premiumRemaining: data.premium_remaining ?? 0,
+        paidUsedToday: data.paid_used_today ?? 0,
+        paidDailyCap: data.paid_daily_cap ?? 0,
+        paidRemaining: data.paid_remaining ?? 0,
       });
     } catch {
       /* backend unreachable — leave previous value */

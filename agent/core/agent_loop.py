@@ -540,7 +540,7 @@ async def _heal_effort_and_rebuild_params(
         model,
         session.hf_token,
         reasoning_effort=session.effective_effort_for(model),
-        bill_to_user=getattr(session, "premium_user_billed", False),
+        bill_to_user=getattr(session, "paid_user_billed", False),
     )
 
 
@@ -591,7 +591,7 @@ async def _compact_and_notify(session: Session) -> None:
 
     Catches ``CompactionFailedError`` and ends the session cleanly instead
     of letting the caller retry. Pre-2026-05-04 the caller looped on
-    ContextWindowExceededError → compact → re-trigger, burning premium
+    ContextWindowExceededError → compact → re-trigger, burning paid-tier
     inference budget while the session never reached the upload path.
     """
     from agent.context_manager.manager import CompactionFailedError
@@ -1207,7 +1207,7 @@ class Handlers:
                     reasoning_effort=session.effective_effort_for(
                         session.config.model_name
                     ),
-                    bill_to_user=getattr(session, "premium_user_billed", False),
+                    bill_to_user=getattr(session, "paid_user_billed", False),
                 )
                 if session.stream:
                     llm_result = await _call_llm_streaming(

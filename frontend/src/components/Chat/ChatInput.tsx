@@ -20,17 +20,16 @@ import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import StopIcon from '@mui/icons-material/Stop';
 import AddIcon from '@mui/icons-material/Add';
 import { apiFetch, apiUpload } from '@/utils/api';
-import type { PlanTier, UserQuota } from '@/hooks/useUserQuota';
+import type { UserQuota } from '@/hooks/useUserQuota';
 import JobsUpgradeDialog from '@/components/JobsUpgradeDialog';
 import { useAgentStore } from '@/store/agentStore';
 import { useSessionStore } from '@/store/sessionStore';
 import {
-  CLAUDE_MODEL_PATH,
   CLAUDE_OPUS_48_MODEL_PATH,
   GPT_55_MODEL_PATH,
+  KIMI_K26_MODEL_PATH,
   isClaudePath,
-  isPremiumPath,
-  isProOnlyPath,
+  isPaidPath,
 } from '@/utils/model';
 
 // Model configuration
@@ -51,11 +50,11 @@ const getHfAvatarUrl = (modelId: string) => {
 
 const DEFAULT_MODEL_OPTIONS: ModelOption[] = [
   {
-    id: 'claude-sonnet-4-6',
-    name: 'Claude Sonnet 4.6',
+    id: 'kimi-k2.6',
+    name: 'Kimi K2.6',
     description: 'Hugging Face',
-    modelPath: CLAUDE_MODEL_PATH,
-    avatarUrl: getHfAvatarUrl(CLAUDE_MODEL_PATH),
+    modelPath: KIMI_K26_MODEL_PATH,
+    avatarUrl: getHfAvatarUrl(KIMI_K26_MODEL_PATH),
     recommended: true,
   },
   {
@@ -64,7 +63,6 @@ const DEFAULT_MODEL_OPTIONS: ModelOption[] = [
     description: 'Hugging Face',
     modelPath: CLAUDE_OPUS_48_MODEL_PATH,
     avatarUrl: getHfAvatarUrl(CLAUDE_OPUS_48_MODEL_PATH),
-    minimumPlan: 'pro',
   },
   {
     id: 'gpt-5.5',
@@ -72,14 +70,6 @@ const DEFAULT_MODEL_OPTIONS: ModelOption[] = [
     description: 'Hugging Face',
     modelPath: GPT_55_MODEL_PATH,
     avatarUrl: getHfAvatarUrl(GPT_55_MODEL_PATH),
-    minimumPlan: 'pro',
-  },
-  {
-    id: 'kimi-k2.6',
-    name: 'Kimi K2.6',
-    description: 'Hugging Face',
-    modelPath: 'moonshotai/Kimi-K2.6',
-    avatarUrl: getHfAvatarUrl('moonshotai/Kimi-K2.6'),
   },
   {
     id: 'minimax-m2.7',
@@ -109,7 +99,6 @@ const normalizeModelPath = (path: string | undefined) => (
     .toLowerCase()
     .replace(/^huggingface\//, '')
     .replace(/claude-opus-4\.(\d)/g, 'claude-opus-4-$1')
-    .replace(/claude-sonnet-4\.(\d)/g, 'claude-sonnet-4-$1')
 );
 
 const findModelByPath = (path: string, options: ModelOption[]): ModelOption | undefined => {
@@ -202,13 +191,7 @@ const DATASET_UPLOAD_ACCEPT = '.csv,.json,.jsonl';
 const DATASET_UPLOAD_EXTENSIONS = new Set(['csv', 'json', 'jsonl']);
 
 const isClaudeModel = (m: ModelOption) => isClaudePath(m.modelPath);
-const isPremiumModel = (m: ModelOption) => isPremiumPath(m.modelPath);
-const isProOnlyModel = (m: ModelOption) => (
-  m.minimumPlan === 'pro' || isProOnlyPath(m.modelPath)
-);
-const isModelAllowedForPlan = (m: ModelOption, plan: PlanTier) => (
-  plan === 'pro' || !isProOnlyModel(m)
-);
+const isPaidModel = (m: ModelOption) => isPaidPath(m.modelPath);
 
 const formatBytes = (bytes: number) => {
   if (bytes < 1024) return `${bytes} B`;
@@ -290,10 +273,7 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
     return () => { cancelled = true; };
   }, [sessionId, updateSessionModel]);
 
-  const plan = quota?.plan ?? 'free';
-  const visibleModelOptions = modelOptions.filter((model) => (
-    isModelAllowedForPlan(model, plan)
-  ));
+  const visibleModelOptions = modelOptions;
   const selectedModel = (
     visibleModelOptions.find(m => m.id === selectedModelId)
     || modelOptions.find(m => m.id === selectedModelId)
@@ -309,16 +289,11 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
   }, [disabled, isProcessing]);
 
   const handleSend = useCallback(() => {
-    const selectedOption = modelOptions.find((model) => model.id === selectedModelId);
-    if (selectedOption && !isModelAllowedForPlan(selectedOption, plan)) {
-      setModelSwitchError('Claude Opus 4.8 and GPT-5.5 daily sessions require HF Pro.');
-      return;
-    }
     if (input.trim() && !disabled && !isUploadingDataset) {
       onSend(input);
       setInput('');
     }
-  }, [input, disabled, isUploadingDataset, onSend, modelOptions, selectedModelId, plan]);
+  }, [input, disabled, isUploadingDataset, onSend]);
 
   const handleDatasetUploadClick = useCallback(() => {
     fileInputRef.current?.click();
@@ -424,10 +399,6 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
   const handleSelectModel = async (model: ModelOption) => {
     handleModelClose();
     if (!sessionId) return;
-    if (!isModelAllowedForPlan(model, plan)) {
-      setModelSwitchError('Claude Opus 4.8 and GPT-5.5 daily sessions require HF Pro.');
-      return;
-    }
     try {
       const res = await apiFetch(`/api/session/${sessionId}/model`, {
         method: 'POST',
@@ -486,14 +457,14 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [awaitingTopUp, jobsUpgradeRequired, handleJobsRetry]);
 
-  // Show the remaining subsidized premium-session allowance for today.
-  const premiumChip = (() => {
+  // Show the remaining included paid-tier session allowance for today.
+  const paidChip = (() => {
     if (!quota) return null;
-    const remaining = Math.max(0, quota.premiumRemaining);
+    const remaining = Math.max(0, quota.paidRemaining);
     if (remaining === 0) {
-      return quota.plan === 'pro' ? '0 left – using HF billing' : '0 left – enable billing';
+      return 'Billed to HF';
     }
-    return `${remaining} left today`;
+    return `${remaining} included today`;
   })();
 
   return (
@@ -793,9 +764,9 @@ export default function ChatInput({ sessionId, initialModelPath, onSend, onStop,
                         }}
                       />
                     )}
-                    {isPremiumModel(model) && premiumChip && (
+                    {isPaidModel(model) && paidChip && (
                       <Chip
-                        label={premiumChip}
+                        label={paidChip}
                         size="small"
                         sx={{
                           height: '18px',

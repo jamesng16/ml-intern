@@ -22,7 +22,7 @@ from agent.core.local_models import (
 )
 from agent.core.model_ids import (
     HF_ROUTER_BASE_URL,
-    is_premium_model_id,
+    is_paid_model_id,
     strip_huggingface_model_prefix,
 )
 
@@ -129,8 +129,8 @@ def _resolve_llm_params(
       3. huggingface_hub cache — ``HF_TOKEN`` / ``HUGGING_FACE_HUB_TOKEN`` /
          local ``hf auth login`` cache.
 
-    Pass ``bill_to_user=True`` only after the daily subsidized allowance is
-    spent. Premium router ids then use the caller's own token, skip
+    Pass ``bill_to_user=True`` when paid-tier usage should be billed to the
+    caller. Paid router ids then use the caller's own token, skip
     ``INFERENCE_TOKEN``, and omit ``X-HF-Bill-To``.
     """
     normalized_model = strip_huggingface_model_prefix(model_name) or model_name
@@ -142,7 +142,7 @@ def _resolve_llm_params(
         return _resolve_local_model_params(normalized_model, reasoning_effort, strict)
 
     hf_model = normalized_model
-    bill_user = bill_to_user and is_premium_model_id(hf_model)
+    bill_user = bill_to_user and is_paid_model_id(hf_model)
     api_key = (
         resolve_hf_token(session_hf_token, include_cached=False)
         if bill_user

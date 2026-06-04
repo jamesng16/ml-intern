@@ -14,7 +14,6 @@ from agent.config import load_config
 from agent.core.agent_loop import process_submission
 from agent.core.model_ids import (
     DEFAULT_MODEL_ID,
-    KIMI_K26_MODEL_ID,
     is_known_router_model_id,
     strip_huggingface_model_prefix,
 )
@@ -113,10 +112,10 @@ class AgentSession:
     is_reaping: bool = False
     broadcaster: Any = None
     title: str | None = None
-    # True once this session has ever been counted against premium quota.
-    # claude_counted_day decides whether it has already consumed today's cap.
-    claude_counted: bool = False
-    claude_counted_day: str | None = None
+    # True once this session has ever been counted against paid-tier quota.
+    # paid_counted_day decides whether it has already consumed today's cap.
+    paid_counted: bool = False
+    paid_counted_day: str | None = None
 
 
 def _quota_day_today() -> str:
@@ -125,14 +124,14 @@ def _quota_day_today() -> str:
 
 def _quota_counted_today(agent_session: AgentSession) -> bool:
     return (
-        agent_session.claude_counted
-        and agent_session.claude_counted_day == _quota_day_today()
+        agent_session.paid_counted
+        and agent_session.paid_counted_day == _quota_day_today()
     )
 
 
-def _premium_user_billed_today(agent_session: AgentSession) -> bool:
+def _paid_user_billed_today(agent_session: AgentSession) -> bool:
     return bool(
-        getattr(agent_session.session, "premium_user_billed", False)
+        getattr(agent_session.session, "paid_user_billed", False)
         and _quota_counted_today(agent_session)
     )
 
@@ -232,22 +231,20 @@ class SessionManager:
     def _model_from_saved_metadata(
         model: str | None,
         *,
-        premium_user_billed: bool,
-        claude_counted: bool,
+        paid_user_billed: bool,
+        paid_counted: bool,
     ) -> tuple[str, bool, bool]:
         normalized = strip_huggingface_model_prefix(model)
         if normalized and is_known_router_model_id(normalized):
-            return normalized, premium_user_billed, claude_counted
+            return normalized, paid_user_billed, paid_counted
 
-        fallback_model = KIMI_K26_MODEL_ID if premium_user_billed else DEFAULT_MODEL_ID
+        fallback_model = DEFAULT_MODEL_ID
         logger.warning(
             "Saved session model %r failed validation; using %r",
             model,
             fallback_model,
         )
-        if fallback_model == KIMI_K26_MODEL_ID:
-            return fallback_model, False, False
-        return fallback_model, premium_user_billed, claude_counted
+        return fallback_model, False, False
 
     def _create_session_sync(
         self,
@@ -618,10 +615,10 @@ class SessionManager:
                 pending_approval=self._serialize_pending_approval(
                     agent_session.session
                 ),
-                claude_counted=agent_session.claude_counted,
-                claude_counted_day=agent_session.claude_counted_day,
-                premium_user_billed=getattr(
-                    agent_session.session, "premium_user_billed", False
+                paid_counted=agent_session.paid_counted,
+                paid_counted_day=agent_session.paid_counted_day,
+                paid_user_billed=getattr(
+                    agent_session.session, "paid_user_billed", False
                 ),
                 created_at=agent_session.created_at,
                 notification_destinations=list(
@@ -711,18 +708,16 @@ class SessionManager:
 
         from litellm import Message
 
-        model, premium_user_billed, claude_counted = self._model_from_saved_metadata(
+        model, paid_user_billed, paid_counted = self._model_from_saved_metadata(
             meta.get("model") or self.config.model_name,
-            premium_user_billed=bool(meta.get("premium_user_billed", False)),
-            claude_counted=bool(meta.get("claude_counted")),
+            paid_user_billed=bool(meta.get("paid_user_billed", False)),
+            paid_counted=bool(meta.get("paid_counted")),
         )
-        claude_counted_day = (
-            str(meta.get("claude_counted_day"))
-            if meta.get("claude_counted_day")
-            else None
+        paid_counted_day = (
+            str(meta.get("paid_counted_day")) if meta.get("paid_counted_day") else None
         )
-        if not claude_counted:
-            claude_counted_day = None
+        if not paid_counted:
+            paid_counted_day = None
         event_queue: asyncio.Queue = asyncio.Queue()
         submission_queue: asyncio.Queue = asyncio.Queue()
         tool_router, session = await asyncio.to_thread(
@@ -781,7 +776,7 @@ class SessionManager:
         self._restore_pending_approval(session, meta.get("pending_approval") or [])
         session.turn_count = int(meta.get("turn_count") or 0)
         session.auto_approval_enabled = bool(meta.get("auto_approval_enabled", False))
-        session.premium_user_billed = premium_user_billed
+        session.paid_user_billed = paid_user_billed
         raw_cap = meta.get("auto_approval_cost_cap_usd")
         session.auto_approval_cost_cap_usd = (
             float(raw_cap) if isinstance(raw_cap, int | float) else None
@@ -805,8 +800,8 @@ class SessionManager:
             created_at=created_at,
             is_active=True,
             is_processing=False,
-            claude_counted=claude_counted,
-            claude_counted_day=claude_counted_day,
+            paid_counted=paid_counted,
+            paid_counted_day=paid_counted_day,
             title=meta.get("title"),
         )
         started = await self._start_agent_session(
@@ -1533,8 +1528,8 @@ class SessionManager:
                 agent_session.session.notification_destinations
             ),
             "auto_approval": self._auto_approval_summary(agent_session.session),
-            "premium_user_billed": _premium_user_billed_today(agent_session),
-            "premium_quota_counted": _quota_counted_today(agent_session),
+            "paid_user_billed": _paid_user_billed_today(agent_session),
+            "paid_quota_counted": _quota_counted_today(agent_session),
         }
 
     def set_notification_destinations(
@@ -1589,8 +1584,8 @@ class SessionManager:
                     created_at_str = str(created_at or datetime.utcnow().isoformat())
                 pending = self._pending_docs_for_api(row.get("pending_approval") or [])
                 quota_counted_today = (
-                    bool(row.get("claude_counted", False))
-                    and row.get("claude_counted_day") == _quota_day_today()
+                    bool(row.get("paid_counted", False))
+                    and row.get("paid_counted_day") == _quota_day_today()
                 )
                 results.append(
                     {
@@ -1603,11 +1598,10 @@ class SessionManager:
                         "pending_approval": pending or None,
                         "model": row.get("model"),
                         "title": row.get("title"),
-                        "premium_user_billed": bool(
-                            row.get("premium_user_billed", False)
-                            and quota_counted_today
+                        "paid_user_billed": bool(
+                            row.get("paid_user_billed", False) and quota_counted_today
                         ),
-                        "premium_quota_counted": quota_counted_today,
+                        "paid_quota_counted": quota_counted_today,
                         "notification_destinations": row.get(
                             "notification_destinations"
                         )

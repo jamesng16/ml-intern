@@ -33,8 +33,8 @@ export interface SessionMeta {
   autoApprovalCostCapUsd?: number | null;
   autoApprovalEstimatedSpendUsd?: number;
   autoApprovalRemainingUsd?: number | null;
-  premiumUserBilled?: boolean;
-  premiumQuotaCounted?: boolean;
+  paidUserBilled?: boolean;
+  paidQuotaCounted?: boolean;
 }
 
 export interface ToolApproval {
