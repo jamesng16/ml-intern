@@ -41,3 +41,55 @@ def test_find_free_port_skips_occupied_port():
         free_port = dev_server.find_free_port("127.0.0.1", occupied_port, 5)
 
     assert free_port > occupied_port
+
+
+def test_classifies_repo_backend_process():
+    dev_server = load_dev_server_module()
+    process = dev_server.ProcessInfo(
+        pid=123,
+        pgid=123,
+        command="uv run --frozen uvicorn main:app --host ::1 --port 7860",
+        cwd=dev_server.BACKEND_DIR,
+    )
+
+    assert dev_server.classify_dev_server_process(process) == "backend"
+
+
+def test_classifies_repo_frontend_vite_process():
+    dev_server = load_dev_server_module()
+    process = dev_server.ProcessInfo(
+        pid=123,
+        pgid=123,
+        command="node ./node_modules/.bin/vite --host 127.0.0.1 --port 5173",
+        cwd=dev_server.FRONTEND_DIR,
+    )
+
+    assert dev_server.classify_dev_server_process(process) == "frontend"
+
+
+def test_ignores_matching_command_from_other_directory(tmp_path):
+    dev_server = load_dev_server_module()
+    process = dev_server.ProcessInfo(
+        pid=123,
+        pgid=123,
+        command="uv run --frozen uvicorn main:app --host ::1 --port 7860",
+        cwd=tmp_path,
+    )
+
+    assert dev_server.classify_dev_server_process(process) is None
+
+
+def test_managed_stack_active_requires_all_processes(monkeypatch):
+    dev_server = load_dev_server_module()
+    state = {
+        "processes": [
+            {"pid": 1, "pgid": 1, "match_markers": ["uvicorn"]},
+            {"pid": 2, "pgid": 2, "match_markers": ["npm"]},
+        ]
+    }
+
+    monkeypatch.setattr(
+        dev_server, "process_matches", lambda process: process["pid"] == 1
+    )
+
+    assert not dev_server.managed_stack_active(state)

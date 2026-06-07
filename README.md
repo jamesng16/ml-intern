@@ -48,10 +48,12 @@ uv run --frozen python scripts/dev_server.py up
 
 The helper starts the backend and frontend together, picks free ports when the
 defaults are busy, points the Vite proxy at the selected backend, and writes
-state/logs to ignored `scratch/dev-server/`.
+state/logs to ignored `scratch/dev-server/`. Before each start it also cleans
+up stale backend/frontend dev server processes from the same worktree.
 
 ```bash
 uv run --frozen python scripts/dev_server.py status
+uv run --frozen python scripts/dev_server.py cleanup
 uv run --frozen python scripts/dev_server.py restart
 uv run --frozen python scripts/dev_server.py down
 ```

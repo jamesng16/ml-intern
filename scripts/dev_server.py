@@ -3,12 +3,14 @@
 
 Usage:
     uv run --frozen python scripts/dev_server.py up
+    uv run --frozen python scripts/dev_server.py cleanup
     uv run --frozen python scripts/dev_server.py down
     uv run --frozen python scripts/dev_server.py restart
     uv run --frozen python scripts/dev_server.py status
 """
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
 import signal
@@ -33,6 +35,19 @@ DEFAULT_BACKEND_PORT = 7860
 DEFAULT_FRONTEND_PORT = 5173
 DEFAULT_PORT_WINDOW = 100
 DEFAULT_TIMEOUT_SECONDS = 30.0
+BACKEND_COMMAND_MARKERS = ("uvicorn", "main:app")
+FRONTEND_COMMAND_MARKER_GROUPS = (
+    ("npm", "run", "dev"),
+    ("vite", "--host"),
+)
+
+
+@dataclass(frozen=True)
+class ProcessInfo:
+    pid: int
+    pgid: int
+    command: str
+    cwd: Path | None
 
 
 def utc_now() -> str:
@@ -68,6 +83,13 @@ def clear_state() -> None:
         STATE_PATH.unlink()
     except FileNotFoundError:
         pass
+
+
+def same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left == right
 
 
 def port_is_free(host: str, port: int) -> bool:
@@ -117,6 +139,25 @@ def process_command(pid: int) -> str:
     return result.stdout.strip()
 
 
+def process_cwd(pid: int) -> Path | None:
+    try:
+        result = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if line.startswith("n"):
+            return Path(line[1:])
+    return None
+
+
 def process_matches(process: dict[str, Any]) -> bool:
     pid = int(process["pid"])
     if not process_alive(pid):
@@ -124,28 +165,46 @@ def process_matches(process: dict[str, Any]) -> bool:
 
     command = process_command(pid)
     markers = process.get("match_markers", [])
-    return bool(command) and all(marker in command for marker in markers)
+    if not (bool(command) and all(marker in command for marker in markers)):
+        return False
+
+    expected_cwd = process.get("cwd")
+    cwd = process_cwd(pid) if expected_cwd else None
+    if expected_cwd and cwd is not None and not same_path(cwd, Path(expected_cwd)):
+        return False
+
+    return True
 
 
-def active_processes(state: dict[str, Any] | None) -> list[dict[str, Any]]:
+def managed_processes(state: dict[str, Any] | None) -> list[dict[str, Any]]:
     if not state:
         return []
     return [
-        process
-        for process in state.get("processes", [])
-        if isinstance(process, dict) and process_matches(process)
+        process for process in state.get("processes", []) if isinstance(process, dict)
     ]
 
 
-def stop_process(process: dict[str, Any], timeout: float) -> None:
-    pid = int(process["pid"])
-    pgid = int(process.get("pgid", pid))
-    name = process.get("name", str(pid))
+def active_processes(state: dict[str, Any] | None) -> list[dict[str, Any]]:
+    return [process for process in managed_processes(state) if process_matches(process)]
 
-    if not process_matches(process):
+
+def process_pgids(processes: list[dict[str, Any]]) -> set[int]:
+    return {int(process.get("pgid", process["pid"])) for process in processes}
+
+
+def managed_stack_active(
+    state: dict[str, Any] | None,
+    active: list[dict[str, Any]] | None = None,
+) -> bool:
+    processes = managed_processes(state)
+    active = active_processes(state) if active is None else active
+    return bool(processes) and len(active) == len(processes)
+
+
+def terminate_process_group(name: str, pid: int, pgid: int, timeout: float) -> None:
+    if not process_alive(pid):
         print(f"{name}: not running")
         return
-
     print(f"{name}: stopping PID {pid}")
     try:
         os.killpg(pgid, signal.SIGTERM)
@@ -169,6 +228,18 @@ def stop_process(process: dict[str, Any], timeout: float) -> None:
         os.kill(pid, signal.SIGKILL)
 
 
+def stop_process(process: dict[str, Any], timeout: float) -> None:
+    pid = int(process["pid"])
+    pgid = int(process.get("pgid", pid))
+    name = process.get("name", str(pid))
+
+    if not process_matches(process):
+        print(f"{name}: not running")
+        return
+
+    terminate_process_group(name, pid, pgid, timeout)
+
+
 def stop_state(state: dict[str, Any] | None, timeout: float) -> None:
     if not state:
         print("No managed dev server state found.")
@@ -180,6 +251,106 @@ def stop_state(state: dict[str, Any] | None, timeout: float) -> None:
         if isinstance(process, dict):
             stop_process(process, timeout)
     clear_state()
+
+
+def command_matches_backend(command: str) -> bool:
+    return all(marker in command for marker in BACKEND_COMMAND_MARKERS)
+
+
+def command_matches_frontend(command: str) -> bool:
+    return any(
+        all(marker in command for marker in markers)
+        for markers in FRONTEND_COMMAND_MARKER_GROUPS
+    )
+
+
+def command_looks_like_dev_server(command: str) -> bool:
+    return command_matches_backend(command) or command_matches_frontend(command)
+
+
+def classify_dev_server_process(process: ProcessInfo) -> str | None:
+    if process.cwd is None:
+        return None
+    if same_path(process.cwd, BACKEND_DIR) and command_matches_backend(process.command):
+        return "backend"
+    if same_path(process.cwd, FRONTEND_DIR) and command_matches_frontend(
+        process.command
+    ):
+        return "frontend"
+    return None
+
+
+def iter_candidate_processes() -> list[ProcessInfo]:
+    result = subprocess.run(
+        ["ps", "-axo", "pid=,pgid=,command="],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    candidates = []
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) != 3:
+            continue
+        pid_text, pgid_text, command = parts
+        if not command_looks_like_dev_server(command):
+            continue
+        try:
+            pid = int(pid_text)
+            pgid = int(pgid_text)
+        except ValueError:
+            continue
+        candidates.append(
+            ProcessInfo(
+                pid=pid,
+                pgid=pgid,
+                command=command,
+                cwd=process_cwd(pid),
+            )
+        )
+    return candidates
+
+
+def discover_stale_dev_servers(exclude_pgids: set[int]) -> list[dict[str, Any]]:
+    stale_processes = []
+    seen_pgids = set(exclude_pgids)
+    for process in iter_candidate_processes():
+        kind = classify_dev_server_process(process)
+        if kind is None or process.pgid in seen_pgids:
+            continue
+        seen_pgids.add(process.pgid)
+        stale_processes.append(
+            {
+                "name": f"stale {kind}",
+                "pid": process.pid,
+                "pgid": process.pgid,
+                "command": process.command,
+                "cwd": str(process.cwd) if process.cwd else None,
+            }
+        )
+    return stale_processes
+
+
+def cleanup_stale_servers(
+    timeout: float,
+    exclude_pgids: set[int] | None = None,
+    verbose: bool = True,
+) -> int:
+    stale_processes = discover_stale_dev_servers(exclude_pgids or set())
+    if not stale_processes:
+        if verbose:
+            print("No stale dev server processes found.")
+        return 0
+
+    print(f"Cleaning up {len(stale_processes)} stale dev server process group(s).")
+    for process in stale_processes:
+        terminate_process_group(
+            process["name"],
+            int(process["pid"]),
+            int(process["pgid"]),
+            timeout,
+        )
+    return len(stale_processes)
 
 
 def wait_for_http(name: str, url: str, timeout: float, log_path: Path) -> bool:
@@ -268,14 +439,29 @@ def build_frontend_env(backend_url: str, frontend_port: int) -> dict[str, str]:
 def command_up(args: argparse.Namespace) -> int:
     existing_state = load_state()
     active = active_processes(existing_state)
-    if active and not args.replace:
+    stack_active = managed_stack_active(existing_state, active)
+
+    if stack_active and args.replace:
+        stop_state(existing_state, args.stop_timeout)
+        active = []
+        stack_active = False
+    elif existing_state and not stack_active:
+        if active:
+            stop_state(existing_state, args.stop_timeout)
+        else:
+            clear_state()
+        active = []
+
+    cleanup_stale_servers(
+        args.stop_timeout,
+        exclude_pgids=process_pgids(active),
+        verbose=False,
+    )
+
+    if stack_active:
         print("Managed dev server is already running.")
         print_status(existing_state)
         return 0
-    if active:
-        stop_state(existing_state, args.stop_timeout)
-    elif state_exists():
-        clear_state()
 
     if ensure_frontend_dependencies(args) != 0:
         return 1
@@ -377,6 +563,26 @@ def command_down(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_cleanup(args: argparse.Namespace) -> int:
+    existing_state = load_state()
+    active = active_processes(existing_state)
+    stack_active = managed_stack_active(existing_state, active)
+
+    if existing_state and not stack_active:
+        if active:
+            stop_state(existing_state, args.stop_timeout)
+        else:
+            clear_state()
+        active = []
+
+    cleanup_stale_servers(
+        args.stop_timeout,
+        exclude_pgids=process_pgids(active),
+        verbose=True,
+    )
+    return 0
+
+
 def command_restart(args: argparse.Namespace) -> int:
     stop_state(load_state(), args.stop_timeout)
     args.replace = False
@@ -439,6 +645,13 @@ def build_parser() -> argparse.ArgumentParser:
     down = subparsers.add_parser("down", help="Stop the managed dev servers.")
     down.add_argument("--stop-timeout", type=float, default=5.0)
     down.set_defaults(func=command_down)
+
+    cleanup = subparsers.add_parser(
+        "cleanup",
+        help="Stop stale unmanaged dev server processes for this worktree.",
+    )
+    cleanup.add_argument("--stop-timeout", type=float, default=5.0)
+    cleanup.set_defaults(func=command_cleanup)
 
     restart = subparsers.add_parser("restart", help="Stop and start dev servers.")
     add_common_up_options(restart)
