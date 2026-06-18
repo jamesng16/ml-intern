@@ -16,6 +16,7 @@ Environment::
 
     HF_KPI_WRITE_TOKEN | HF_SESSION_UPLOAD_TOKEN | HF_TOKEN | HF_ADMIN_TOKEN
         First one found is used. Least-privilege first.
+    KPI_USER_HASH_SALT  required by the v2 builder to hash user/session/artifact ids
     KPI_SOURCE_REPO     default smolagents/ml-intern-sessions
     KPI_TARGET_REPO     default smolagents/ml-intern-kpis
     ML_INTERN_KPIS_DISABLED  if truthy, the scheduler is not started
@@ -80,7 +81,14 @@ async def _run_hour(hour_dt: datetime) -> None:
         api = HfApi()
         source = os.environ.get("KPI_SOURCE_REPO", "smolagents/ml-intern-sessions")
         target = os.environ.get("KPI_TARGET_REPO", "smolagents/ml-intern-kpis")
-        await asyncio.to_thread(mod.run_for_hour, api, source, target, hour_dt, token)
+        await asyncio.to_thread(
+            mod.run_for_hour,
+            api,
+            source_repo=source,
+            target_repo=target,
+            hour_dt=hour_dt,
+            token=token,
+        )
     except Exception as e:
         logger.warning("kpis_scheduler: rollup for %s failed: %s", hour_dt, e)
 
