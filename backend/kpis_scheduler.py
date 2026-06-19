@@ -112,6 +112,9 @@ def start(backfill_hours: int = 6) -> None:
     if os.environ.get("ML_INTERN_KPIS_DISABLED"):
         logger.info("kpis_scheduler: disabled via ML_INTERN_KPIS_DISABLED")
         return
+    if not os.environ.get("KPI_USER_HASH_SALT"):
+        logger.error("kpis_scheduler: KPI_USER_HASH_SALT is required, skipping")
+        return
     if _scheduler is not None:
         return
 

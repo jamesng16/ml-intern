@@ -747,6 +747,13 @@ def _write_csv(
     )
 
 
+def _fact_start_day(fact: dict[str, Any]) -> str:
+    start_ts = _parse_ts(fact.get("session_start_time"))
+    if start_ts:
+        return _date_key(start_ts)
+    return str((fact.get("active_dates") or ["unknown"])[0])
+
+
 def _write_session_facts(
     api: Any,
     *,
@@ -756,13 +763,7 @@ def _write_session_facts(
 ) -> None:
     by_start_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for fact in facts:
-        start_ts = _parse_ts(fact.get("session_start_time"))
-        start_day = (
-            _date_key(start_ts)
-            if start_ts
-            else (fact.get("active_dates") or ["unknown"])[0]
-        )
-        by_start_day[str(start_day)].append(fact)
+        by_start_day[_fact_start_day(fact)].append(fact)
 
     for day_key, day_facts in by_start_day.items():
         _upload_bytes(
@@ -853,6 +854,10 @@ def _facts_for_start_dates(
 
 
 def _daily_start_dates(day: date) -> list[date]:
+    # Rollups read the target day and the previous start-date partition to
+    # include normal midnight-spanning sessions. Sessions active for more than
+    # one day before this window are not included; ML Intern sessions are
+    # expected to be short-lived.
     return [day - timedelta(days=1), day]
 
 
@@ -864,6 +869,8 @@ def _month_start_dates(month_key: str, through_day: date | None = None) -> list[
     if through_day is not None and through_day.strftime("%Y-%m") == month_key:
         end = min(end, through_day)
     dates = []
+    # Include the previous day to catch ordinary sessions that started before
+    # midnight on the first of the month and remained active after it.
     current = start - timedelta(days=1)
     while current <= end:
         dates.append(current)
@@ -883,7 +890,6 @@ def _write_daily_rollup(
     facts = _facts_for_start_dates(
         api, source_repo, _daily_start_dates(day), token, salt
     )
-    _write_session_facts(api, repo_id=target_repo, token=token, facts=facts)
     row = _daily_rollup(facts, day.isoformat())
     _write_csv(
         api,
@@ -912,7 +918,6 @@ def _write_monthly_rollup(
         token,
         salt,
     )
-    _write_session_facts(api, repo_id=target_repo, token=token, facts=facts)
     row = _monthly_rollup(facts, month_key)
     _write_csv(
         api,
@@ -945,7 +950,13 @@ def run_for_hour(
         token,
         salt,
     )
-    _write_session_facts(api, repo_id=target_repo, token=token, facts=facts)
+    current_day = day.isoformat()
+    _write_session_facts(
+        api,
+        repo_id=target_repo,
+        token=token,
+        facts=[fact for fact in facts if _fact_start_day(fact) == current_day],
+    )
 
     hour = _hour_key(hour_dt)
     row = _hourly_rollup(facts, hour)

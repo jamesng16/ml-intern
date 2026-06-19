@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,23 @@ def _session(
         "events": events or [],
         "usage_metrics": usage_metrics or _usage_metrics(),
     }
+
+
+class FakeHfApi:
+    def __init__(self, files):
+        self.files = files
+        self.uploads = []
+
+    def list_repo_files(self, *, repo_id, repo_type, token):
+        return list(self.files)
+
+    def create_repo(self, **kwargs):
+        return None
+
+    def upload_file(self, *, path_or_fileobj, path_in_repo, **kwargs):
+        with open(path_or_fileobj, "rb") as f:
+            content = f.read()
+        self.uploads.append({"path_in_repo": path_in_repo, "content": content})
 
 
 def test_session_fact_hashes_ids_preserves_plan_and_uses_usage_metrics_for_billing():
@@ -348,3 +366,46 @@ def test_monthly_rollup_filters_by_active_month():
 
     assert row["active_sessions"] == 1
     assert row["completed_sessions"] == 1
+
+
+def test_run_for_hour_uploads_session_facts_only_once_for_current_day(monkeypatch):
+    mod = _load()
+    files = [
+        "sessions/2026-06-01/previous.jsonl",
+        "sessions/2026-06-02/current.jsonl",
+    ]
+    sessions = {
+        "sessions/2026-06-01/previous.jsonl": _session(
+            session_id="previous",
+            start="2026-06-01T23:55:00+00:00",
+            end="2026-06-02T00:05:00+00:00",
+        ),
+        "sessions/2026-06-02/current.jsonl": _session(
+            session_id="current",
+            start="2026-06-02T10:00:00+00:00",
+            end="2026-06-02T10:10:00+00:00",
+        ),
+    }
+    api = FakeHfApi(files)
+    monkeypatch.setattr(
+        mod,
+        "_download_session",
+        lambda repo_id, path, token: sessions[path],
+    )
+
+    row = mod.run_for_hour(
+        api,
+        source_repo="source",
+        target_repo="target",
+        hour_dt=datetime(2026, 6, 2, 10, tzinfo=timezone.utc),
+        token="token",
+        salt=SALT,
+    )
+
+    assert row["active_sessions"] == 1
+    assert [upload["path_in_repo"] for upload in api.uploads] == [
+        "v2/session_facts/2026-06-02.jsonl",
+        "v2/hourly/2026-06-02/10.csv",
+        "v2/daily/2026-06-02.csv",
+        "v2/monthly/2026-06.csv",
+    ]
